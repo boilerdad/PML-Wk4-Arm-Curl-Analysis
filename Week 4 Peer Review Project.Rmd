@@ -1,0 +1,184 @@
+---
+title: Practical Machine Learning Week 4 Peer Review Project
+author: JP Dunlap
+---
+
+## Introduction  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of this analysis is to predict the manner in which the participants did the exercise. The "classe" variable in the data training data set is the outcome variable in the analysis.
+
+## Data Preprocessing  
+
+The training data for this project are taken from:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are taken from:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. They have been very generous in allowing their data to be used for this assignment. For more information please see:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+```{r, load_libraries, cache=T, echo=FALSE}
+require(caret)
+require(rpart)
+require(rpart.plot)
+require(randomForest)
+require(corrplot)
+```
+### Downloading the Data from the Original Data Source
+
+Download the training and test data sets. Create two data frames, one for the training data (trainingDF) and one for the testing data (testingDF).
+
+```{r, get_data, cache = T, echo=T}
+trainingUrl <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testingUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainingFile <- "./data/pml-training.csv"
+testingFile  <- "./data/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(trainingFile)) {
+  download.file(trainingUrl, destfile=trainingFile)
+}
+if (!file.exists(testingFile)) {
+  download.file(testingUrl, destfile=testingFile)
+}
+```  
+
+```{r, read_the_data, cache = T}
+trainingDF <- read.csv("./data/pml-training.csv")
+testingDF <- read.csv("./data/pml-testing.csv")
+
+```
+The unedited training data set contains `r nrow(trainingDF)` observations, while the unedited testing data set contains `r nrow(testingDF)` observations. The unedited data frames both have `r ncol(testingDF)` variables, including the "classe" variable which is the outcome to predict. 
+
+### Cleaning the data
+
+Exploratory analysis has indicated that very few of the cases in the training data frame, and none of the cases in the testing data frame have all of the predictive data elements recorded. In addition, there are some variables recorded in the data set that are not actual predictors. These missing elements, and non predictors must be removed before model building.
+
+The first step is to pull the factor variable "classe"" out of the training data frames and place it in a separate variable so it does not get lost later as we clean the data. It is returned to the cleaned data frame before model building. Then the variables that do not actually serve as predictors can be eliminated. These include things such as user identifiers and time stamps.Then variables that are predominately missing can be eliminated.
+
+```{r, eliminate_missings, cache = T}
+
+#Preserve the classe variable
+classe <- trainingDF$classe
+
+#Start by converting blanks to NAs
+trainingDF[trainingDF == ""] <- NA
+testingDF[testingDF == ""] <- NA
+
+#Do Column-wise elimination of all variables with NA values
+trainingDF <- trainingDF[, colSums(is.na(trainingDF)) == 0] 
+testingDF <- testingDF[, colSums(is.na(testingDF)) == 0] 
+
+#Remove variables that are named "timestamp", and those that are non numeric (which is why it was necessary to preserve classe)
+trainingTmp <- grepl("^X|timestamp|window", names(trainingDF))
+trainingDF <- trainingDF[, !trainingTmp]
+trainingData <- trainingDF[, sapply(trainingDF, is.numeric)]
+
+#Remerge classe
+trainingData$classe <- classe
+
+#Do the same for the testing data frame
+testingTmp <- grepl("^X|timestamp|window", names(testingDF))
+testingDF <- testingDF[, !testingTmp]
+testingData <- testingDF[, sapply(testingDF, is.numeric)]
+```
+Now, the cleaned training data set ("trainingData") now has only `r ncol(trainingData)` variables, one of which is "classe" and the rest of which are predictors. 
+
+### Creating a Validation Data Set
+
+This assignment actually requires three data sets. The fist is the training, the second is a true testing set, and the third is a data set of 20 observations on which the learner is actually "tested". Even though it is not completely appropriate to call the second data set a validation data set, that name will be used here for the name of the data set against which the training model will be tested. A new validation data set will be created from the original training set before the model is run.
+
+```{r, partition_data, cache = T}
+set.seed(32257) 
+inValidate <- createDataPartition(trainingData$classe, p=0.70, list=F)
+trainData <- trainingData[inValidate, ]
+validateData <- trainingData[-inValidate, ]
+```
+
+## Random Forest Modeling
+
+**Random Forest Modeling was selected because it is a classification method that combines different approaches such as decision trees and bagging into one approach. It is computationally intensive, but for this data set that is not a consideration. In addition, the algorithm can perform cross-validation. This model includes k-fold validation with k = 5**. 
+
+```{r, build_RF_model, cache = T}
+
+#setup crossvalidation
+controlValidation <- trainControl(method="cv", 5)
+
+#run model
+modelRf <- train(classe ~ ., data=trainData, method="rf", trControl=controlValidation, ntree=150)
+modelRf
+```
+
+### Model Performance
+
+The performance of the model is ascertained by looking at a few factors. The first indicator is the confusion matrix which shows the actual performance of the model against its own test group (the validateData data frame in this case) to see how well it predicts).The accuracy and sampling error are also reviewed. These are provided in the following table.
+
+```{r, confusion_matrix, cache = T}
+predictRf <- predict(modelRf, validateData)
+
+confusionMatrix(validateData$classe, predictRf)
+precisionRF <- confusionMatrix(validateData$classe, predictRf)
+
+```
+
+The confusion matrix shows a high level of accuracy between the predicted categories and the actual categories in the validation data set. 
+
+The **estimated accuracy of the model is `r precisionRF$overall[1]`** and the **out of sample error is `r 1- precisionRF$overall[1]`**.
+
+## Predicting for Test Data Set
+
+Now, we apply the model to the original testing data set downloaded from the data source. We remove the `problem_id` column first.  
+```{r, results, cache = T}
+result <- predict(modelRf, testingData[, -length(names(testingData))])
+result
+```  
+
+## Appendix: Comparison to Other ML Approaches
+
+The Random Forest Algorithm is certainly more accurate than other approaches, but in some cases one might argue for simplicity, especially if interpretability is of prime concern. So as a contrast a simple classification tree approach was attempted for comparison. The results are as follows:
+
+```{r, Tree_mode, cache = T}
+modelTree <- train(classe ~ ., data=trainData, method="rpart")
+modelTree
+predictTree <- predict(modelTree, validateData)
+confusionMatrix(validateData$classe, predictTree)
+precisionTree <- confusionMatrix(validateData$classe, predictTree)
+
+
+```
+The confusion matrix shows numerous misclassifications with a fairlow low accuracy. 
+
+The estimated accuracy of the Classification Tree model is `r precisionTree$overall[1]` and the estimated sample error is `r 1- precisionTree$overall[1]`. As a reminder, the estimated accuracy of the Random Forest model is `r precisionRF$overall[1]` and the estimated sample error is `r 1- precisionRF$overall[1]` - *substantially better*.
+
+```{r Tree_predictions, cache=T}
+
+
+resultTree <- predict(modelTree, testingData[, -length(names(testingData))])
+
+ctable <- confusionMatrix(result,resultTree)
+
+
+```
+
+When the predictions are compared using the Classification Tree to the Random Forest predictions for the test data set, the results are significantly different. 
+
+The predicted results from the Random Forest Model for the test set are:
+
+`r result`
+
+The predicted results from the Classification Tree Model for the test set are:
+
+`r resultTree`
+
+Finally, the confusion matrix of the Random Forest prediction versus the Classification Tree prediction is:
+
+```{r cache=T}
+ctable$table
+```
